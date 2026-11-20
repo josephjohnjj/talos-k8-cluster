@@ -42,3 +42,12 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+# Local Talos credentials
+provisioning/talos/generated/
+provisioning/talos/secrets.yaml
+provisioning/talos/talosconfig
+provisioning/talos/kubeconfig
+.DS_Store
+
+talos.rst
+provisioning/.terraform.lock.hcl

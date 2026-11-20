@@ -1,0 +1,6 @@
+machine:
+  time:
+    servers:
+      - 169.254.169.123
+  sysctls:
+    vm.max_map_count: "262144"
