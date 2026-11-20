@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlproject-pvc
+  namespace: mlproject
+  annotations:
+    argocd.argoproj.io/sync-wave: "30"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: scratch-sc
+  volumeMode: Filesystem

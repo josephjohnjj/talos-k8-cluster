@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubeflow-trainer
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  project: infrastructure
+
+  source:
+    repoURL: https://github.com/josephjohnjj/kubernetes-training.git
+    path: charts/kubeflow-trainer
+    targetRevision: talos
+    helm:
+      valuesObject:
+        runtimes:
+          torchDistributed:
+            enabled: true
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kubeflow-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

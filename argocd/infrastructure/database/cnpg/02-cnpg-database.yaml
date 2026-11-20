@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-database
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-6"
+spec:
+  project: infrastructure
+
+  source:
+    repoURL: https://github.com/josephjohnjj/kubernetes-training.git
+    targetRevision: talos
+    path: charts/cloudnative-pg-cluster
+    helm:
+      releaseName: cnpg
+      valueFiles:
+        - cnpg-cluster-values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-database
+
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false
+
+    syncOptions:
+      - CreateNamespace=true
+      # During a clean build, the database Application can be discovered
+      # before the CNPG operator has installed postgresql.cnpg.io CRDs.
+      - SkipDryRunOnMissingResource=true

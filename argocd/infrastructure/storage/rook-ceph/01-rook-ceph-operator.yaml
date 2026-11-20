@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: infrastructure
+
+  source:
+    repoURL: https://github.com/josephjohnjj/kubernetes-training.git
+    targetRevision: talos
+    path: charts/rook-ceph
+    helm:
+      releaseName: rook-ceph
+      valueFiles:
+        - rook-ceph-op-values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rook-ceph
+
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false
+
+    syncOptions:
+      - CreateNamespace=true
+      # The ceph-csi-operator Driver and OperatorConfig CRDs exceed the
+      # client-side apply annotation size limit. Server-side apply installs
+      # and upgrades those CRDs without storing the full manifest in an
+      # annotation.
+      - ServerSideApply=true

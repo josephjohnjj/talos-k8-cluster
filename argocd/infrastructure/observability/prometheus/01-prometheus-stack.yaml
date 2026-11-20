@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+
+spec:
+  project: infrastructure
+
+  source:
+    repoURL: https://github.com/josephjohnjj/kubernetes-training.git
+    path: charts/prometheus-stack
+    targetRevision: talos
+    helm:
+      valueFiles:
+        - prometheus-stack-values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prometheus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: prometheus-grafana
+      namespace: prometheus
+      jsonPointers:
+        - /data/admin-password
+
+    - group: apps
+      kind: Deployment
+      name: prometheus-grafana
+      namespace: prometheus
+      jsonPointers:
+        - /spec/template/metadata/annotations/checksum~1secret

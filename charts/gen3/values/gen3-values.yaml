@@ -1,0 +1,374 @@
+global:
+  dictionaryUrl: "https://s3.amazonaws.com/dictionary-artifacts/datadictionary/develop/schema.json"
+
+  hostname: gen3.44.207.222.188.nip.io
+
+  dev: false
+
+  postgres:
+    dbCreate: true
+    externalSecret: postgres-dbcreds
+    master:
+      host: gen3-db-cluster-rw.gen3-db
+      database: gen3db
+      port: "5432"
+
+fence:
+  postgres:
+    host: gen3-db-cluster-rw.gen3-db
+    port: "5432"
+    database: fence_gen3
+    username: fence_gen3
+    password: fence_gen3
+
+  # Configure S3 Access Keys values for the user sync process
+  # Other configuraiton is in the usersync values file in argocd repo
+  usersync:
+    userYamlS3AccessKeyId: "MOZX23BEC0RAAD35MBJ7"
+    userYamlS3SecretAccessKey: "SeDmbojoOCywDvncu87YqJjGNAPxcOoguNIBzMC7"
+    userYamlS3Endpoint: "http://rook-ceph-rgw-gen3-store.rook-ceph.svc:80"
+    userYamlS3Path: "s3://users-bucket/users.yaml"
+
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: ""
+    name: "fence-service-sa"
+
+  indexd:
+    url: "http://indexd-service"
+    basic_auth: false
+    defaultPrefix: "gen31k/"
+
+    # I added the service account section because in this version by default the
+    # eks.amazonaws.com/role-arn is set to null which breaks the deployment
+    serviceAccount:
+      create: true
+      annotations:
+        eks.amazonaws.com/role-arn: ""
+      name: "fence-service-sa"
+
+  # Access Keys for the FENCE_CONFIG section.
+  extraEnv:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: users-bucket
+          key: AWS_ACCESS_KEY_ID
+
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: users-bucket
+          key: AWS_SECRET_ACCESS_KEY
+
+    - name: AWS_ENDPOINT_URL
+      value: "http://rook-ceph-rgw-gen3-store.rook-ceph.svc:80"
+
+    - name: PGHOST
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: host
+
+    - name: PGUSER
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: username
+
+    - name: PGPASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: password
+
+    - name: PGDB
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: database
+
+    - name: DB
+      #value: "postgresql://$(PGUSER):$(PGPASSWORD)@$(PGHOST):5432/$(PGDB)"
+      value: "postgresql://fence_gen3:fence_gen3@gen3-db-cluster-rw.gen3-db:5432/fence_gen3"
+
+    - name: FENCE_DB
+      #value: "postgresql://$(PGUSER):$(PGPASSWORD)@$(PGHOST):5432/$(PGDB)"
+      value: "postgresql://fence_gen3:fence_gen3@gen3-db-cluster-rw.gen3-db:5432/fence_gen3"
+
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: users-bucket
+          key: AWS_ACCESS_KEY_ID
+
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: users-bucket
+          key: AWS_SECRET_ACCESS_KEY
+
+    - name: AWS_ENDPOINT_URL
+      value: "http://rook-ceph-rgw-gen3-store.rook-ceph.svc:80"
+
+    - name: PGHOST
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: host
+
+    - name: PGUSER
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: username
+
+    - name: PGPASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: password
+
+    - name: PGDB
+      valueFrom:
+        secretKeyRef:
+          name: fence-dbcreds
+          key: database
+
+    - name: DB
+      #value: "postgresql://$(PGUSER):$(PGPASSWORD)@$(PGHOST):5432/$(PGDB)"
+      value: "postgresql://fence_gen3:fence_gen3@gen3-db-cluster-rw.gen3-db:5432/fence_gen3"
+
+    - name: FENCE_DB
+      #value: "postgresql://$(PGUSER):$(PGPASSWORD)@$(PGHOST):5432/$(PGDB)"
+      value: "postgresql://fence_gen3:fence_gen3@gen3-db-cluster-rw.gen3-db:5432/fence_gen3"
+
+  FENCE_CONFIG:
+    OPENID_CONNECT:
+      generic_oidc_idp:
+        name: "Keycloak"
+        discovery_url: "http://keycloak.44.207.222.188.nip.io/realms/genome/.well-known/openid-configuration"
+        redirect_url: "http://gen3.44.207.222.188.nip.io/login/generic_oidc_idp/login"
+        client_id: "gen3-fence"
+        client_secret: "10FeHUHWPu8G2xFE1pTcQ5B8hTbBcmfT"
+        user_id_field: "email"
+        scope: "openid email"
+    LOGIN_OPTIONS:
+      - name: "Keycloak Login"
+        description: "Gen3 Keycloak Login"
+        idp: generic_oidc_idp
+    DEFAULT_LOGIN_IDP: generic_oidc_idp
+    #DATA_UPLOAD_BUCKET: "{{gen3_upload_bucket}}"
+    #ENABLE_S3_UPLOAD: true
+    #AWS_CREDENTIALS:
+    #  "CRED1":
+    #    aws_access_key_id: "{{s3_access_key | b64decode}}"
+    #    aws_secret_access_key: "{{s3_secret_key | b64decode}}"
+    #S3_BUCKETS:
+    #  "{{gen3_upload_bucket}}":
+    #    cred: "CRED1"
+    #    endpoint_url: "{{s3_host_base}}"
+
+sheepdog:
+  postgres:
+    username: gen3db
+    password: gen3db-password
+
+arborist:
+  postgres:
+    username: arborist_gen3
+    password: arborist_gen3
+
+metadata:
+  postgres:
+    username: metadata_gen3
+    password: metadata_gen3
+
+indexd:
+  image:
+    repository: quay.io/cdis/indexd
+    tag: "2025.08"
+    pullPolicy: IfNotPresent
+
+  postgres:
+    host: "gen3-db-cluster-rw.gen3-db.svc.cluster.local"
+    port: "5432"
+    database: "indexd_gen3"
+    username: "indexd_gen3"
+    password: "indexd_gen3"
+
+  # Indexd 2025.08 imports local_settings from its /indexd working directory.
+  volumeMounts:
+    - name: uwsgi-config
+      mountPath: /etc/uwsgi/uwsgi.ini
+      subPath: uwsgi.ini
+    - name: config-volume
+      readOnly: true
+      mountPath: /indexd/local_settings.py
+      subPath: local_settings.py
+    - name: gunicorn-conf
+      readOnly: true
+      mountPath: /indexd/deployment/wsgi/gunicorn.conf.py
+      subPath: gunicorn.conf.py
+
+peregrine:
+  postgres:
+    username: peregrine_gen3
+    password: peregrine_gen3
+
+audit:
+  postgres:
+    username: audit_gen3
+    password: audit_gen3
+
+  # I added the service account section because in this version by default the
+  # eks.amazonaws.com/role-arn is set to null which breaks the deployment
+  serviceAccount:
+    create: true ## Testing ##
+    annotations:
+      eks.amazonaws.com/role-arn: ""
+    name: "audit-service-sa"
+
+wts:
+  postgres:
+    username: wts_gen3
+    password: wts_gen3
+  #oidc_client_id: "gen3-wts"
+  #oidc_client_secret: "9xTnXNeVBn6erv7JkNmkEq4DR9d7SShj"
+
+ambassador:
+  enabled: false
+
+guppy:
+  enabled: true
+
+  #esEndpoint: "https://elasticsearch-es-http.elasticsearch.svc:9200"
+  #esEndpoint: "https://elastic:41RTyGJQEi63tmab18jCiJLE@elasticsearch-es-http.elasticsearch.svc:9200"
+  esEndpoint: "http://elastic:41RTyGJQEi63tmab18jCiJLE@elasticsearch-es-http.elasticsearch.svc:9200"
+
+  extraEnv:
+    - name: NODE_EXTRA_CA_CERTS
+      value: /guppy/certs/ca.crt
+    #- name: NODE_OPTIONS
+    #  value: "--use-openssl-ca"
+    - name: GEN3_ES_USER
+      value: "elastic"
+    - name: GEN3_ES_PASSWORD
+      value: "41RTyGJQEi63tmab18jCiJLE"
+    #- name: NODE_TLS_REJECT_UNAUTHORIZED
+    #  value: "0"
+
+  #volumes:
+  #  - name: elasticsearch-ca
+  #    secret:
+  #      secretName: elasticsearch-ca
+  #      items:
+  #        - key: ca.crt
+  #          path: ca.crt
+  #
+  #volumeMounts:
+  #  - name: elasticsearch-ca
+  #    readOnly: true
+  #    mountPath: /guppy/certs
+
+  #indices:
+  #  - index: subject
+  #    type: subject
+  #  - index: file
+  #    type: file
+
+  indices:
+    - index: dev_case
+      type: case
+
+  # Sidecar index Tube auto-creates to tell Guppy which fields are
+  # multi-valued (arrays). On this deployment Tube created two — one
+  # per data index — so point configIndex at the one corresponding to
+  # the PRIMARY data index (subject). Per-index discovery isn't
+  # supported in this Guppy version; the single configIndex value
+  # below is used for both indices.
+  #configIndex: "subject-array-config" # alias preferred: "subject-array-config"
+  configIndex: "dev_case-array-config"
+
+  # Field in each document that Guppy checks against the caller's
+  # Arborist permissions. "auth_resource_path" is the Gen3 standard
+  # (e.g. "/programs/1KG/projects/PHASE3"). Under libre this is
+  # effectively unused, but Guppy still requires the key to be set.
+  authFilterField: "auth_resource_path"
+
+  # Only consulted when global.tierAccessLevel == "regular". Counts
+  # below this number are returned as the threshold to prevent
+  # re-identification from small bins. Harmless under libre.
+  tierAccessLimit: 1000
+
+  # Field-level encryption is for "regular" tier deployments that want
+  # to expose some columns (e.g. submitter_id) only as hashed values.
+  # We don't need it under libre.
+  enableEncryptWhitelist: false
+  encryptWhitelist: ""
+
+revproxy:
+  hostname: "gen3.44.207.222.188.nip.io"
+  ingress:
+    enabled: false
+    className: "nginx"
+  service:
+    type: ClusterIP
+
+etl:
+  enabled: true
+  image:
+    tube:
+      repository: quay.io/cdis/tube
+      pullPolicy: IfNotPresent
+    spark:
+      repository: quay.io/cdis/gen3-spark
+      pullPolicy: IfNotPresent
+  spark:
+    requests:
+      cpu: 0.3
+      memory: 128Mi
+    limits:
+      cpu: 1.0
+      memory: 4Gi
+  #esEndpoint: "elasticsearch-es-http.elasticsearch.svc:9200"
+  esEndpoint: "elasticsearch-es-http.elasticsearch.svc"
+
+portal:
+  enabled: true
+  annotations:
+    secret.reloader.stakater.com/reload: "portal-config"
+  resources:
+    requests:
+      cpu: 2.0
+      memory: 8Gi
+    limits:
+      cpu: 2.0
+      memory: 8Gi
+
+elasticsearch:
+  image: "quay.io/cdis/elasticsearch"
+  imageTag: "7.10.2"
+  clusterName: gen3-elasticsearch
+  maxUnavailable: 0
+  singleNode: true
+  replicas: 1
+
+  clusterHealthCheckParams: "wait_for_status=yellow&timeout=1s"
+
+  esConfig:
+    elasticsearch.yml: |
+
+  volumeClaimTemplate:
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: gen3-elasticsearch-sc
+    resources:
+      requests:
+        storage: 30Gi
+
+  resources:
+    requests:
+      cpu: "500m"

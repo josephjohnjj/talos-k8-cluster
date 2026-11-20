@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-csi
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  project: infrastructure
+
+  source:
+    repoURL: https://github.com/josephjohnjj/kubernetes-training.git
+    targetRevision: talos
+    path: charts/ceph-csi-drivers
+    helm:
+      valueFiles:
+        - rook-ceph-csi-values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rook-ceph
+
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false
+
+    syncOptions:
+      - CreateNamespace=true
+      # On a new cluster, this Application can be discovered before the Rook
+      # operator has installed the csi.ceph.io CRDs. Let Argo CD defer schema
+      # validation until those CRDs are available.
+      - SkipDryRunOnMissingResource=true
