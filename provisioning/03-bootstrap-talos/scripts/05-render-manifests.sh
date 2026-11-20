@@ -8,7 +8,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TALOS_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 REPOSITORY_ROOT=$(CDPATH= cd -- "$TALOS_DIR/../.." && pwd)
-PROVISIONING_DIR=${PROVISIONING_DIR:-"$REPOSITORY_ROOT/provisioning"}
+PROVISIONING_DIR=${PROVISIONING_DIR:-"$REPOSITORY_ROOT/provisioning/02-terraform"}
 
 MODE=${1:-apply}
 case "$MODE" in
@@ -20,15 +20,15 @@ case "$MODE" in
     ;;
 esac
 
-INGRESS_IP=$(terraform -chdir="$PROVISIONING_DIR" output -json login_node_public_ips |
-  jq -er 'if length == 1 then .[0] else error("expected exactly one ingress Elastic IP") end')
-
-case "$INGRESS_IP" in
-  *[!0-9.]*|.*|*.)
-    echo "Invalid ingress IP returned by Terraform: $INGRESS_IP" >&2
-    exit 1
-    ;;
-esac
+INGRESS_IPS=$(terraform -chdir="$PROVISIONING_DIR" output -json login_node_public_ips)
+INGRESS_IP=$(printf '%s\n' "$INGRESS_IPS" | jq -er '
+  def ipv4: strings | split(".") |
+    length == 4 and all(.[]; test("^[0-9]{1,3}$") and tonumber <= 255);
+  if type == "array" and length == 1 and (.[0] | ipv4) == true
+  then .[0]
+  else error("expected exactly one valid ingress Elastic IPv4 address")
+  end
+')
 
 PUBLIC_DOMAIN="$INGRESS_IP.nip.io"
 
@@ -61,8 +61,8 @@ FILES=$(find_targets)
 if [ "$MODE" = "--check" ]; then
   stale=0
   for file in $FILES; do
-    if grep -E '[0-9]{1,3}(\.[0-9]{1,3}){3}\.nip\.io' "$file" |
-      grep -Fv "$PUBLIC_DOMAIN" >/dev/null 2>&1; then
+    if grep -Eo '[0-9]{1,3}(\.[0-9]{1,3}){3}\.nip\.io' "$file" |
+      grep -Fxv "$PUBLIC_DOMAIN" >/dev/null 2>&1; then
       echo "Stale nip.io hostname: ${file#"$REPOSITORY_ROOT/"}" >&2
       stale=1
     fi

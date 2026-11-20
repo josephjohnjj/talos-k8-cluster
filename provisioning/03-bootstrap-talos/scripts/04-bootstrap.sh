@@ -5,7 +5,7 @@ set -eu
 : "${CONTROL_PLANE_ENDPOINTS:=$CONTROL_PLANE_NODES}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-GENERATED_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../generated" && pwd)
+GENERATED_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../../01-prepare-talos/generated" && pwd)
 
 set -- $CONTROL_PLANE_NODES
 BOOTSTRAP_NODE=$1

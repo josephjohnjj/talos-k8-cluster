@@ -1,0 +1,82 @@
+---
+- name: Prepare Talos and HCP Terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) }}"
+    cluster_name: k8-talos-cluster
+    existing_allocation_id: "{{ lookup('ansible.builtin.env', 'CONTROLPLANE_API_EIP_ALLOCATION_ID') }}"
+    generated_dir: "{{ playbook_dir }}/generated"
+  tasks:
+    - name: Check for an existing Talos configuration
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}"
+      register: generated
+
+    - name: Confirm new or existing configuration workflow
+      ansible.builtin.assert:
+        that:
+          - new_cluster is defined
+          - (new_cluster | bool) != generated.stat.exists
+          - (new_cluster | bool) or (existing_allocation_id | length > 0)
+        fail_msg: >-
+          For a new cluster set new_cluster=true and start without a generated
+          directory. For an existing cluster set new_cluster=false, preserve
+          generated, and export its CONTROLPLANE_API_EIP_ALLOCATION_ID.
+
+    - name: Reserve or look up the API Elastic IP
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/scripts/00-reserve-controlplane-eip.sh"
+      environment:
+        AWS_REGION: "{{ aws_region }}"
+        CONTROLPLANE_API_EIP_ALLOCATION_ID: "{{ existing_allocation_id }}"
+      register: reservation
+
+    - name: Read the Elastic IP allocation and Kubernetes endpoint
+      ansible.builtin.set_fact:
+        allocation_id: "{{ (reservation.stdout_lines | select('match', '^export CONTROLPLANE_API_EIP_ALLOCATION_ID=') | first).split('=', 1)[1] }}"
+        kubernetes_endpoint: "{{ (reservation.stdout_lines | select('match', '^export KUBERNETES_ENDPOINT=') | first).split('=', 1)[1] }}"
+
+    - name: Generate Talos configuration for a new cluster
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/scripts/02-generate-config.sh"
+      environment:
+        CLUSTER_NAME: "{{ cluster_name }}"
+        KUBERNETES_ENDPOINT: "{{ kubernetes_endpoint }}"
+      when: new_cluster | bool
+      no_log: true
+
+    - name: Check that the Talos client config is readable and nonempty
+      ansible.builtin.command:
+        argv: [test, "{{ item }}", "{{ generated_dir }}/talosconfig"]
+      loop: ['-r', '-s']
+      changed_when: false
+
+    - name: Validate the machine configurations
+      ansible.builtin.command:
+        argv: [talosctl, validate, --config, "{{ generated_dir }}/{{ item }}.yaml", --mode, cloud]
+      loop: [controlplane, worker, ingress]
+      changed_when: false
+
+    - name: Sync the AWS credentials in the attached HCP variable set
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/scripts/01-sync-hcp-aws-credentials.sh"
+      when: sync_aws_credentials | default(true) | bool
+      no_log: true
+
+    - name: Sync Terraform workspace variables
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/scripts/03-sync-hcp-variables.sh"
+      environment:
+        CONTROLPLANE_API_EIP_ALLOCATION_ID: "{{ allocation_id }}"
+      no_log: true
+
+    - name: Show the API reservation used for Terraform
+      ansible.builtin.debug:
+        msg: "{{ allocation_id }} provides {{ kubernetes_endpoint }}."

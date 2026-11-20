@@ -1,15 +1,9 @@
 # Talos Kubernetes cluster on AWS
 
-Start from the repository root and run `cd provisioning/talos`. Keep the same
-shell for the steps below so the exported variables carry forward. You’ll need
-the AWS CLI, Terraform, `talosctl` v1.14.5, `kubectl`, `jq`, `curl`, and Perl.
-
-The HCP Terraform workspace is `aws-resources/k8-talos-cluster`. For an existing cluster,
-reuse its Elastic IP and original generated configuration, and skip scripts
-`02` and `04`. Keep generated credentials out of Git.
-
-If moving an existing deployment, make its Terraform state available in
-`aws-resources/k8-talos-cluster` before planning or applying there.
+Run the commands below from the repository root. The playbooks run locally
+and use the AWS, HCP Terraform, and Talos APIs through the existing helpers.
+Install Ansible, the AWS CLI, Terraform, `talosctl` v1.14.5, `kubectl`, `jq`,
+`curl`, and Perl.
 
 ## Prerequisites
 
@@ -19,7 +13,8 @@ If moving an existing deployment, make its Terraform state available in
    `aws-resources` and a workspace named `k8-talos-cluster`.
 3. You have created an HCP Terraform variable set named `aws_credentials`
    and attached it to the `k8-talos-cluster` workspace. Create these entries
-   in the variable set before running script `01`.
+   in the variable set before running the preparation playbook. For temporary AWS credentials,
+   also create `AWS_SESSION_TOKEN` as a sensitive environment variable.
 
    | Key | Value | Category |
    |---|---|---|
@@ -53,201 +48,84 @@ For a different region or architecture, use the matching entry in the
 | `worker_gpu_instance_type` | `t3a.2xlarge` |
 | `worker_node_gpu_count` | `2` |
 
-## 00 — Reserve the control-plane Elastic IP
+## 01 — Prepare Talos and HCP Terraform
 
-This script looks up the address tagged `talos-kubernetes-api` in the selected AWS account and region, or reserves and tags one if none exists.\
-Its output sets the Kubernetes endpoint for script `02` and the allocation ID for script `03`.
+The playbook reserves or looks up the control-plane Elastic IP and validates
+the Talos configs. It then syncs AWS credentials and Terraform workspace
+variables to HCP.
 
-Set `AWS_REGION` to match Terraform’s `aws_region`. Use AWS credentials that
-can describe, allocate, and tag Elastic IPs. If the cluster already has an
-allocation, export its `CONTROLPLANE_API_EIP_ALLOCATION_ID` before running this.
-
-```sh
-export AWS_REGION=us-east-1
-eip_exports=$(./scripts/00-reserve-controlplane-eip.sh) && eval "$eip_exports"
-```
-
-**Check.** Run this in the same shell as step `00`. It looks up the public IP
-using the allocation ID and compares it with `KUBERNETES_ENDPOINT`.
-
-```sh
-if reserved_ip=$(aws ec2 describe-addresses --region "$AWS_REGION" \
-  --allocation-ids "$CONTROLPLANE_API_EIP_ALLOCATION_ID" \
-  --query 'Addresses[0].PublicIp' --output text) &&
-  [ -n "$reserved_ip" ] && [ "$reserved_ip" != None ] &&
-  [ "$KUBERNETES_ENDPOINT" = "https://$reserved_ip:6443" ]; then
-  printf 'Verified %s points to %s\n' "$CONTROLPLANE_API_EIP_ALLOCATION_ID" "$KUBERNETES_ENDPOINT"
-else
-  printf 'Verification failed. Check the AWS region, allocation ID, and endpoint from step 00.\n' >&2
-  false
-fi
-```
-
-## 01 — Sync AWS credentials to HCP Terraform
-
-This script reads the credentials configured in the AWS CLI.\
-It updates the matching sensitive environment variables in an attached HCP variable set.
-
-Sign in with an account that can update the attached variable set and write
-workspace variables.
+Sign in with an account that can update the attached variable set and workspace
+variables. Set `AWS_REGION` to match the workspace’s `aws_region`.
 
 ```sh
 terraform login
+export AWS_REGION=us-east-1
+ansible-playbook -i localhost, provisioning/01-prepare-talos/prepare.yml -e new_cluster=true
 ```
 
-Scripts `01` and `03` read the HCP token from
-`~/.terraform.d/credentials.tfrc.json` by default. The attached variable set
-must already contain `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, plus
-`AWS_SESSION_TOKEN` if you use temporary credentials.
+For an existing cluster, keep its original files in
+`provisioning/01-prepare-talos/generated/`, export its
+`CONTROLPLANE_API_EIP_ALLOCATION_ID`, and run with `-e new_cluster=false`.
+Add `-e sync_aws_credentials=false` if the attached variable set already has
+valid AWS credentials. Run from the network you’ll administer the cluster from,
+because the playbook sets the API allowlist to your public IPv4 address.
+If a run fails after generating valid configs, keep them, export the allocation
+ID for that endpoint, and rerun with `-e new_cluster=false`.
+
+**Check.** The play recap should show `failed=0`, and the final task should
+show the allocation ID and Kubernetes endpoint. In HCP Terraform, open
+**Workspaces → k8-talos-cluster → Variables** and confirm the attached
+`aws_credentials` set, the allocation ID, the three sensitive machine
+configs, and the expected API allowlist.
+
+## 02 — Terraform plan and apply
+
+Terraform creates the AWS infrastructure and attaches the reserved API address
+to `control1`. For an existing deployment, make its state available in
+`aws-resources/k8-talos-cluster` before planning or applying there.
 
 ```sh
-./scripts/01-sync-hcp-aws-credentials.sh
+terraform -chdir=provisioning/02-terraform init
+terraform -chdir=provisioning/02-terraform plan
 ```
 
-**Check.** Confirm the script prints both lines:
-
-```text
-Synced HCP environment variable: AWS_ACCESS_KEY_ID
-Synced HCP environment variable: AWS_SECRET_ACCESS_KEY
-```
-
-If you use temporary credentials, also look for
-`Synced HCP environment variable: AWS_SESSION_TOKEN`.
-
-1. In HCP Terraform, open the `aws-resources` organization and select
-   **Workspaces** → **k8-talos-cluster** → **Variables**.
-2. Confirm `aws_credentials` appears under **Variable sets**.
-3. Open `aws_credentials` and check that each expected key has category
-   **Environment** (`env`) and is marked **Sensitive**. The values are write-only,
-   so verify the key names and settings in the UI.
-
-[HCP Terraform variable documentation](https://developer.hashicorp.com/terraform/cloud-docs/variables)
-
-## 02 — Generate Talos configuration
-
-This script uses the cluster name and Kubernetes endpoint to generate the control-plane, worker, and ingress machine configs.\
-It also creates `generated/talosconfig` for administering the same cluster.
+Review the plan, then apply it.
 
 ```sh
-export CLUSTER_NAME=k8-talos-cluster
-./scripts/02-generate-config.sh
+terraform -chdir=provisioning/02-terraform apply
 ```
 
-**Check.** From `provisioning/talos`, run the block below. It checks that
-`generated/talosconfig` is readable and nonempty, then validates the
-control-plane, worker, and ingress configs in cloud mode.
+**Check.** Confirm the apply succeeds and lists the public API address, the
+control-plane private addresses, and exactly one ingress Elastic IP.
 
 ```sh
-(
-  set -e
-  if [ ! -r generated/talosconfig ] || [ ! -s generated/talosconfig ]; then
-    printf 'Missing, unreadable, or empty file: generated/talosconfig\n' >&2
-    exit 1
-  fi
-
-  for config in controlplane worker ingress; do
-    talosctl validate --config "generated/$config.yaml" --mode cloud
-  done
-
-  printf 'Talos client config is present and all three machine configs passed validation.\n'
-)
+terraform -chdir=provisioning/02-terraform output controlplane_api_public_ip
+terraform -chdir=provisioning/02-terraform output control_node_private_ip
+terraform -chdir=provisioning/02-terraform output login_node_public_ips
 ```
 
-Continue to step `03` when you see the final success message. If validation
-fails, Talos prints the error for the config being checked.
+## 03 — Bootstrap Talos and render ingress hostnames
 
-## 03 — Sync Terraform variables to HCP
-
-This script uploads the control-plane Elastic IP allocation ID and the three Talos machine configs to the workspace.\
-It replaces the API allowlist with your current public IP as a `/32`, so run it from the network you’ll use to administer the cluster.
+The playbook reads the ingress IP from Terraform and renders the public
+hostnames. For a new cluster, explicitly enable the one-time etcd bootstrap
+and kubeconfig retrieval.
 
 ```sh
-test -n "${CONTROLPLANE_API_EIP_ALLOCATION_ID:-}" &&
-test -s generated/controlplane.yaml &&
-test -s generated/worker.yaml &&
-test -s generated/ingress.yaml &&
-./scripts/03-sync-hcp-variables.sh
+ansible-playbook -i localhost, provisioning/03-bootstrap-talos/post-apply.yml -e bootstrap_cluster=true
 ```
 
-**Check.** Look for five `Synced Terraform variable` messages. In the workspace
-variables, verify `controlplane_api_eip_allocation_id` matches step `00`, the
-three machine config variables are marked sensitive, and
-`talos_api_allowed_cidrs` contains your expected public IPv4 address as a `/32`.
-
-## Terraform — Create the AWS infrastructure
-
-From `provisioning/talos`, initialize Terraform for the configured workspace
-and review the plan before applying it.
+For an existing cluster or to render hostnames again, run without the bootstrap flag.
 
 ```sh
-terraform -chdir=.. init
-terraform -chdir=.. plan
+ansible-playbook -i localhost, provisioning/03-bootstrap-talos/post-apply.yml
 ```
 
-```sh
-terraform -chdir=.. apply
-```
-
-**Check.** Confirm the apply succeeds and Terraform reports the private
-control-plane addresses, the reserved API address, and exactly one ingress
-Elastic IP.
+**Check.** The play recap should show `failed=0`. After bootstrap, allow the
+expected nodes time to reach `Ready` and verify the rendered hostname changes.
 
 ```sh
-terraform -chdir=.. output control_node_private_ip
-terraform -chdir=.. output controlplane_api_public_ip
-terraform -chdir=.. output login_node_public_ips
-```
-
-## 04 — Bootstrap a new cluster
-
-This script connects through the public API Elastic IP and bootstraps etcd on `control1` using its private IP.\
-It writes the Kubernetes client config to `generated/kubeconfig`.
-
-Set the bootstrap addresses from Terraform and check that Talos reports both
-client and server versions before bootstrapping.
-
-```sh
-CONTROL_PLANE_ENDPOINTS=$(terraform -chdir=.. output -raw controlplane_api_public_ip) &&
-control_plane_ips=$(terraform -chdir=.. output -json control_node_private_ip) &&
-CONTROL_PLANE_NODES=$(printf '%s\n' "$control_plane_ips" | jq -er '.[0]') &&
-export CONTROL_PLANE_ENDPOINTS CONTROL_PLANE_NODES &&
-talosctl --talosconfig generated/talosconfig \
-  --endpoints "$CONTROL_PLANE_ENDPOINTS" --nodes "$CONTROL_PLANE_NODES" version
-```
-
-Run this once for a new cluster.
-
-```sh
-./scripts/04-bootstrap.sh
-```
-
-**Check.** Confirm the kubeconfig exists and the Kubernetes API responds. Allow
-time for the nodes to join, then confirm the expected nodes report `Ready`.
-
-```sh
-test -s generated/kubeconfig &&
-kubectl --kubeconfig generated/kubeconfig get nodes -o wide
-```
-
-## 05 — Render public hostnames
-
-This script reads the ingress worker’s Elastic IP from Terraform’s `login_node_public_ips` output.\
-It updates the `nip.io` hostnames in the ingress manifests and GEN3 values.
-
-```sh
-./scripts/05-render-manifests.sh
-```
-
-**Check.** Run the built-in check and list the distinct IP-based domains in the
-four render targets. The list should contain only `<ingress-ip>.nip.io`, using
-the ingress IP printed by Terraform.
-
-```sh
-./scripts/05-render-manifests.sh --check
-grep -rEho '[0-9]{1,3}(\.[0-9]{1,3}){3}\.nip\.io' \
-  ../../argocd/ingresses/ ../../manifests/ingress/ \
-  ../../charts/gen3/values/gen3-values.yaml \
-  ../../charts/gen3-2025.08/values/gen3-values.yaml | sort -u
+kubectl --kubeconfig provisioning/01-prepare-talos/generated/kubeconfig get nodes -o wide
+git diff -- argocd/ingresses manifests/ingress charts/gen3/values charts/gen3-2025.08/values
 ```
 
 Argo CD bootstrap, infrastructure, application, and ingress manifests are

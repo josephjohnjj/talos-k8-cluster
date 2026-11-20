@@ -1,0 +1,80 @@
+---
+- name: Bootstrap Talos and render ingress hostnames
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    terraform_dir: "{{ playbook_dir }}/../02-terraform"
+    generated_dir: "{{ playbook_dir }}/../01-prepare-talos/generated"
+  tasks:
+    - name: Bootstrap a new cluster
+      when: bootstrap_cluster | default(false) | bool
+      block:
+        - name: Check whether kubeconfig already exists
+          ansible.builtin.stat:
+            path: "{{ generated_dir }}/kubeconfig"
+          register: kubeconfig
+
+        - name: Prevent a repeated bootstrap
+          ansible.builtin.assert:
+            that:
+              - not kubeconfig.stat.exists
+            fail_msg: A kubeconfig already exists. Run without bootstrap_cluster to render hostnames only.
+
+        - name: Read the public Talos endpoint
+          ansible.builtin.command:
+            argv: [terraform, "-chdir={{ terraform_dir }}", output, -raw, controlplane_api_public_ip]
+          register: endpoint
+          changed_when: false
+
+        - name: Read the control-plane node IPs
+          ansible.builtin.command:
+            argv: [terraform, "-chdir={{ terraform_dir }}", output, -json, control_node_private_ip]
+          register: nodes
+          changed_when: false
+
+        - name: Check Talos API connectivity on control1
+          ansible.builtin.command:
+            argv:
+              - talosctl
+              - --talosconfig
+              - "{{ generated_dir }}/talosconfig"
+              - --endpoints
+              - "{{ endpoint.stdout }}"
+              - --nodes
+              - "{{ nodes.stdout | from_json | first }}"
+              - version
+          register: talos_version
+          until: talos_version.rc == 0
+          retries: 30
+          delay: 10
+          changed_when: false
+
+        - name: Bootstrap etcd and retrieve kubeconfig
+          ansible.builtin.command:
+            argv:
+              - "{{ playbook_dir }}/scripts/04-bootstrap.sh"
+          environment:
+            CONTROL_PLANE_ENDPOINTS: "{{ endpoint.stdout }}"
+            CONTROL_PLANE_NODES: "{{ nodes.stdout | from_json | first }}"
+
+        - name: Wait for the Kubernetes API to respond
+          ansible.builtin.command:
+            argv: [kubectl, --kubeconfig, "{{ generated_dir }}/kubeconfig", get, nodes, -o, wide]
+          register: kubernetes_nodes
+          until: kubernetes_nodes.rc == 0
+          retries: 30
+          delay: 10
+          changed_when: false
+
+        - name: Show Kubernetes nodes
+          ansible.builtin.debug:
+            var: kubernetes_nodes.stdout_lines
+
+    - name: Render and verify ingress hostnames from Terraform state
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/scripts/05-render-manifests.sh"
+      environment:
+        PROVISIONING_DIR: "{{ terraform_dir }}"

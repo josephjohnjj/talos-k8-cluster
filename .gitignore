@@ -43,11 +43,11 @@ terraform.rc
 # Uncomment the line below if you want to ignore planout files.
 # planout
 # Local Talos credentials
-provisioning/talos/generated/
-provisioning/talos/secrets.yaml
-provisioning/talos/talosconfig
-provisioning/talos/kubeconfig
+provisioning/01-prepare-talos/generated/
+provisioning/01-prepare-talos/secrets.yaml
+provisioning/01-prepare-talos/talosconfig
+provisioning/01-prepare-talos/kubeconfig
 .DS_Store
 
 talos.rst
-provisioning/.terraform.lock.hcl
+provisioning/02-terraform/.terraform.lock.hcl
