@@ -1,0 +1,146 @@
+---
+- name: Read the HCP Terraform CLI credentials
+  ansible.builtin.slurp:
+    src: "{{ lookup('ansible.builtin.env', 'TF_CLI_CONFIG_FILE') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.terraform.d/credentials.tfrc.json', true) }}"
+  register: hcp_credentials
+  no_log: true
+
+- name: Determine the administrator public IPv4 address
+  ansible.builtin.uri:
+    url: https://checkip.amazonaws.com
+    return_content: true
+  register: public_ip
+
+- name: Check the administrator IPv4 address
+  ansible.builtin.assert:
+    that: (public_ip.content | trim) is match(ipv4_pattern)
+
+- name: Manage HCP variables
+  vars:
+    hcp_api: https://app.terraform.io/api/v2
+    hcp_organization: "{{ lookup('ansible.builtin.env', 'HCP_ORGANIZATION') | default('aws-resources', true) }}"
+    hcp_workspace: "{{ lookup('ansible.builtin.env', 'HCP_WORKSPACE') | default('k8-talos-cluster', true) }}"
+    workspace_vars_url: "{{ hcp_api }}/workspaces/{{ workspace.json.data.id }}/vars"
+    aws_varset_url: "{{ hcp_api }}/varsets/{{ (credential_sets | first).id }}/relationships/vars"
+    credential_sets: "{{ attached_varsets.json.data | selectattr('attributes.name', 'equalto', 'aws_credentials') | list }}"
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        Authorization: "Bearer {{ (hcp_credentials.content | b64decode | from_json).credentials['app.terraform.io'].token }}"
+        Content-Type: application/vnd.api+json
+      follow_redirects: none
+      body_format: json
+  block:
+    - name: Find the HCP workspace
+      ansible.builtin.uri:
+        url: "{{ hcp_api }}/organizations/{{ hcp_organization }}/workspaces/{{ hcp_workspace }}"
+      register: workspace
+      no_log: true
+
+    - name: Read existing workspace variables
+      ansible.builtin.uri:
+        url: "{{ workspace_vars_url }}?page%5Bsize%5D=100"
+      register: workspace_variables
+      no_log: true
+
+    - name: Ensure the workspace variable list is complete
+      ansible.builtin.assert:
+        that: not ((workspace_variables.json.links | default({})).next | default(false, true))
+        fail_msg: The workspace has more than 100 variables. Resolve pagination before syncing.
+
+    - name: Update the attached AWS credentials
+      when: sync_aws_credentials | default(true) | bool
+      block:
+        - name: Find the attached AWS credential set
+          ansible.builtin.uri:
+            url: "{{ hcp_api }}/workspaces/{{ workspace.json.data.id }}/varsets?q=aws_credentials&page%5Bsize%5D=100"
+          register: attached_varsets
+          no_log: true
+
+        - name: Require the aws_credentials variable set
+          ansible.builtin.assert:
+            that: credential_sets | length == 1
+
+        - name: Read AWS credential set entries
+          ansible.builtin.uri:
+            url: "{{ aws_varset_url }}?page%5Bsize%5D=100"
+          register: aws_variables
+          no_log: true
+
+        - name: Resolve active AWS CLI credentials
+          ansible.builtin.command:
+            argv: [aws, configure, export-credentials, --format, process]
+          register: aws_credentials
+          changed_when: false
+          no_log: true
+
+        - name: Select the credentials to sync
+          ansible.builtin.set_fact:
+            aws_values: "{{ key_values | combine(session_value) }}"
+          vars:
+            credentials: "{{ aws_credentials.stdout | from_json }}"
+            key_values:
+              AWS_ACCESS_KEY_ID: "{{ credentials.AccessKeyId }}"
+              AWS_SECRET_ACCESS_KEY: "{{ credentials.SecretAccessKey }}"
+            session_value: "{{ {'AWS_SESSION_TOKEN': credentials.SessionToken} if credentials.SessionToken | default('') else {} }}"
+          no_log: true
+
+        - name: Confirm every AWS environment variable already exists
+          ansible.builtin.assert:
+            that: matching_vars | length == 1
+            fail_msg: "Create exactly one sensitive environment entry for {{ item }} in aws_credentials."
+          vars:
+            matching_vars: "{{ aws_variables.json.data | selectattr('attributes.category', 'equalto', 'env') | selectattr('attributes.key', 'equalto', item) | list }}"
+          loop: "{{ aws_values.keys() | list }}"
+
+        - name: Update sensitive AWS environment variables
+          ansible.builtin.uri:
+            url: "{{ aws_varset_url }}/{{ selected.id }}"
+            method: PATCH
+            body:
+              data:
+                type: vars
+                attributes:
+                  key: "{{ item.key }}"
+                  value: "{{ item.value }}"
+                  category: env
+                  sensitive: true
+                  hcl: false
+          vars:
+            selected: "{{ aws_variables.json.data | selectattr('attributes.category', 'equalto', 'env') | selectattr('attributes.key', 'equalto', item.key) | first }}"
+          loop: "{{ aws_values | dict2items }}"
+          changed_when: true
+          no_log: true
+
+    - name: Upsert Terraform workspace variables
+      ansible.builtin.uri:
+        url: "{{ workspace_vars_url ~ ('/' ~ variable_id if variable_id else '') }}"
+        method: "{{ 'PATCH' if variable_id else 'POST' }}"
+        status_code: "{{ [200] if variable_id else [200, 201] }}"
+        body:
+          data: "{{ {'type': 'vars', 'attributes': attributes} | combine({'id': variable_id} if variable_id else {}) }}"
+      vars:
+        variable_id: "{{ workspace_variables.json.data | selectattr('attributes.category', 'equalto', 'terraform') | selectattr('attributes.key', 'equalto', item.key) | map(attribute='id') | first | default('') }}"
+        attributes:
+          key: "{{ item.key }}"
+          value: "{{ item.value }}"
+          category: terraform
+          sensitive: "{{ item.sensitive | default(false) }}"
+          hcl: "{{ item.hcl | default(false) }}"
+      loop:
+        - key: controlplane_api_eip_allocation_id
+          value: "{{ allocation_id }}"
+        - key: controlplane_machine_config
+          value: "{{ lookup('ansible.builtin.file', generated_dir ~ '/controlplane.yaml') }}"
+          sensitive: true
+        - key: worker_machine_config
+          value: "{{ lookup('ansible.builtin.file', generated_dir ~ '/worker.yaml') }}"
+          sensitive: true
+        - key: ingress_machine_config
+          value: "{{ lookup('ansible.builtin.file', generated_dir ~ '/ingress.yaml') }}"
+          sensitive: true
+        - key: talos_api_allowed_cidrs
+          value: "{{ [public_ip.content | trim ~ '/32'] | to_json }}"
+          hcl: true
+      changed_when: true
+      no_log: true

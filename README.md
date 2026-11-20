@@ -1,9 +1,14 @@
 # Talos Kubernetes cluster on AWS
 
 Run the commands below from the repository root. The playbooks run locally
-and use the AWS, HCP Terraform, and Talos APIs through the existing helpers.
-Install Ansible, the AWS CLI, Terraform, `talosctl` v1.14.5, `kubectl`, `jq`,
-`curl`, and Perl.
+and manage AWS and HCP Terraform through Ansible modules. Install Ansible,
+AWS CLI v2, Terraform, `talosctl` v1.14.5, and `kubectl`. Install `boto3` and
+`botocore` in the Python environment used by Ansible, then install the AWS
+collection.
+
+```sh
+ansible-galaxy collection install -r provisioning/01-prepare-talos/00-ansible-requirements.yml
+```
 
 ## Prerequisites
 
@@ -60,7 +65,7 @@ variables. Set `AWS_REGION` to match the workspace’s `aws_region`.
 ```sh
 terraform login
 export AWS_REGION=us-east-1
-ansible-playbook -i localhost, provisioning/01-prepare-talos/prepare.yml -e new_cluster=true
+ansible-playbook -i localhost, provisioning/01-prepare-talos/01-prepare-talos.yml -e new_cluster=true
 ```
 
 For an existing cluster, keep its original files in
@@ -111,13 +116,21 @@ hostnames. For a new cluster, explicitly enable the one-time etcd bootstrap
 and kubeconfig retrieval.
 
 ```sh
-ansible-playbook -i localhost, provisioning/03-bootstrap-talos/post-apply.yml -e bootstrap_cluster=true
+ansible-playbook -i localhost, provisioning/03-bootstrap-talos/03-bootstrap-and-render.yml -e bootstrap_cluster=true
 ```
 
-For an existing cluster or to render hostnames again, run without the bootstrap flag.
+If the bootstrap request was sent and kubeconfig retrieval failed, confirm
+bootstrap succeeded, then retry retrieval without sending another bootstrap
+request.
 
 ```sh
-ansible-playbook -i localhost, provisioning/03-bootstrap-talos/post-apply.yml
+ansible-playbook -i localhost, provisioning/03-bootstrap-talos/03-bootstrap-and-render.yml -e retrieve_kubeconfig=true
+```
+
+For an existing cluster or to render hostnames again, run without either flag.
+
+```sh
+ansible-playbook -i localhost, provisioning/03-bootstrap-talos/03-bootstrap-and-render.yml
 ```
 
 **Check.** The play recap should show `failed=0`. After bootstrap, allow the

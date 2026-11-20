@@ -1,0 +1,133 @@
+---
+- name: Prepare Talos and HCP Terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) }}"
+    cluster_name: k8-talos-cluster
+    existing_allocation_id: "{{ lookup('ansible.builtin.env', 'CONTROLPLANE_API_EIP_ALLOCATION_ID') }}"
+    ipv4_pattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
+    generated_dir: "{{ playbook_dir }}/generated"
+  tasks:
+    - name: Check for an existing Talos configuration
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}"
+      register: generated
+
+    - name: Confirm new or existing configuration workflow
+      ansible.builtin.assert:
+        that:
+          - new_cluster is defined
+          - (new_cluster | bool) != generated.stat.exists
+          - (new_cluster | bool) or (existing_allocation_id | length > 0)
+        fail_msg: >-
+          For a new cluster set new_cluster=true and start without a generated
+          directory. For an existing cluster set new_cluster=false, preserve
+          generated, and export its CONTROLPLANE_API_EIP_ALLOCATION_ID.
+
+    - name: Look up the API Elastic IP
+      amazon.aws.ec2_eip_info:
+        region: "{{ aws_region }}"
+        filters: "{{ {'allocation-id': existing_allocation_id} if existing_allocation_id else {'tag:Name': 'talos-kubernetes-api'} }}"
+      register: addresses
+
+    - name: Require an unambiguous Elastic IP selection
+      ansible.builtin.assert:
+        that:
+          - addresses.addresses | length <= 1
+          - not existing_allocation_id or addresses.addresses | length == 1
+        fail_msg: >-
+          The requested allocation was not found or the tag matched multiple addresses.
+          Set CONTROLPLANE_API_EIP_ALLOCATION_ID to the intended allocation.
+
+    - name: Allocate and tag the API Elastic IP when needed
+      amazon.aws.ec2_eip:
+        region: "{{ aws_region }}"
+        in_vpc: true
+        state: present
+        tags:
+          Name: talos-kubernetes-api
+      register: allocated
+      when: addresses.addresses | length == 0
+
+    - name: Set the allocation and Kubernetes endpoint
+      ansible.builtin.set_fact:
+        allocation_id: "{{ reservation.allocation_id }}"
+        kubernetes_endpoint: "https://{{ reservation.public_ip }}:6443"
+      vars:
+        reservation: "{{ (addresses.addresses | first) if addresses.addresses else allocated }}"
+
+    - name: Generate configuration for a new cluster
+      when: new_cluster | bool
+      block:
+        - name: Read the Talos client version
+          ansible.builtin.command:
+            argv: [talosctl, version, --client]
+          register: talos_client
+          changed_when: false
+
+        - name: Require Talos v1.14.5
+          ansible.builtin.assert:
+            that: talos_client.stdout is search('(?m)^\s*Tag:\s*v1\.14\.5[ \t]*$')
+
+        - name: Create the private output directory
+          ansible.builtin.file:
+            path: "{{ generated_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Generate Talos machine and client configurations
+          ansible.builtin.command:
+            argv:
+              - talosctl
+              - gen
+              - config
+              - "{{ cluster_name }}"
+              - "{{ kubernetes_endpoint }}"
+              - "--output-dir={{ generated_dir }}"
+              - --with-docs=false
+              - --with-examples=false
+              - --install-disk=/dev/xvda
+              - "--config-patch=@{{ playbook_dir }}/patches/01-shared-config.yaml"
+              - "--config-patch-control-plane=@{{ playbook_dir }}/patches/02-control-plane.yaml"
+          no_log: true
+
+        - name: Derive the ingress config from the worker config
+          ansible.builtin.command:
+            argv:
+              - talosctl
+              - machineconfig
+              - patch
+              - "{{ generated_dir }}/worker.yaml"
+              - "--patch=@{{ playbook_dir }}/patches/03-ingress.yaml"
+              - "--output={{ generated_dir }}/ingress.yaml"
+          no_log: true
+
+    - name: Check that generated files are readable and nonempty
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/{{ item }}"
+        get_checksum: false
+        get_mime: false
+      loop: [talosconfig, controlplane.yaml, worker.yaml, ingress.yaml]
+      register: config_files
+      failed_when: >-
+        not (config_files.stat.isreg | default(false)) or
+        not (config_files.stat.readable | default(false)) or
+        (config_files.stat.size | default(0)) == 0
+
+    - name: Validate machine configs in cloud mode
+      ansible.builtin.command:
+        argv: [talosctl, validate, --config, "{{ generated_dir }}/{{ item }}.yaml", --mode, cloud]
+      loop: [controlplane, worker, ingress]
+      changed_when: false
+      no_log: true
+
+    - name: Sync the HCP workspace
+      ansible.builtin.import_tasks: 02-sync-hcp-variables.yml
+
+    - name: Show the API reservation used for Terraform
+      ansible.builtin.debug:
+        msg: "{{ allocation_id }} provides {{ kubernetes_endpoint }}."
