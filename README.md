@@ -1,5 +1,8 @@
 # Talos Kubernetes cluster on AWS
 
+To remove a deployment, follow [04 — Tear down the AWS cluster](#04--tear-down-the-aws-cluster)
+to review the destroy plan and release both Elastic IPs.
+
 Run the commands below from the repository root. The playbooks run locally
 and manage AWS and HCP Terraform through Ansible modules. Install Ansible,
 AWS CLI v2, Terraform, `talosctl` v1.14.5, and `kubectl`. Install `boto3` and
