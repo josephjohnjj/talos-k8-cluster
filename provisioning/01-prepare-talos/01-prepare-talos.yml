@@ -62,6 +62,22 @@
 
     - name: Generate configuration for a new cluster
       when: new_cluster | bool
+      vars:
+        shared_patch:
+          machine:
+            time:
+              servers: [169.254.169.123]
+            sysctls:
+              vm.max_map_count: "262144"
+        control_plane_patch:
+          apiVersion: v1alpha1
+          kind: KubeFlannelCNIConfig
+          kubeNetworkPoliciesEnabled: true
+        ingress_patch:
+          apiVersion: v1alpha1
+          kind: KubeNodeConfig
+          taints:
+            dedicated: ingress:NoSchedule
       block:
         - name: Read the Talos client version
           ansible.builtin.command:
@@ -91,8 +107,8 @@
               - --with-docs=false
               - --with-examples=false
               - --install-disk=/dev/xvda
-              - "--config-patch=@{{ playbook_dir }}/patches/01-shared-config.yaml"
-              - "--config-patch-control-plane=@{{ playbook_dir }}/patches/02-control-plane.yaml"
+              - "--config-patch={{ shared_patch | to_json }}"
+              - "--config-patch-control-plane={{ control_plane_patch | to_json }}"
           no_log: true
 
         - name: Derive the ingress config from the worker config
@@ -102,7 +118,7 @@
               - machineconfig
               - patch
               - "{{ generated_dir }}/worker.yaml"
-              - "--patch=@{{ playbook_dir }}/patches/03-ingress.yaml"
+              - "--patch={{ ingress_patch | to_json }}"
               - "--output={{ generated_dir }}/ingress.yaml"
           no_log: true
 
