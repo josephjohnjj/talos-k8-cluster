@@ -51,3 +51,4 @@ provisioning/01-prepare-talos/kubeconfig
 
 talos.rst
 provisioning/02-terraform/.terraform.lock.hcl
+provisioning/04-tear-down/.pending-elastic-ip.json

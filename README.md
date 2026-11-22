@@ -143,3 +143,35 @@ git diff -- argocd/ingresses manifests/ingress charts/gen3/values charts/gen3-20
 
 Argo CD bootstrap, infrastructure, application, and ingress manifests are
 under `argocd/`.
+
+## 04 — Tear down the AWS cluster
+
+This permanently deletes the infrastructure managed by the Terraform workspace,
+including the EC2 nodes and their Terraform-managed storage and ingress IP.
+After Terraform succeeds, the playbook releases the separately reserved
+control-plane Elastic IP by its allocation ID.
+
+Back up any data you need, then review the destroy plan from the repository root.
+Use the same AWS account and region as stage `01`.
+
+```sh
+export AWS_REGION=us-east-1
+terraform -chdir=provisioning/02-terraform init
+terraform -chdir=provisioning/02-terraform plan -destroy
+```
+
+After reviewing the plan, explicitly confirm the teardown.
+
+```sh
+ansible-playbook -i localhost, provisioning/04-tear-down/04-tear-down.yml -e confirm_teardown=true
+```
+
+If provisioning stopped before Terraform wrote its outputs, export
+`CONTROLPLANE_API_EIP_ALLOCATION_ID` for the reservation before running teardown.
+If teardown fails after Terraform destroys the cluster, rerun the same command
+from the same checkout. The playbook keeps the allocation ID locally until AWS
+confirms the address is gone.
+
+**Check.** Confirm the play recap reports `failed=0` and HCP Terraform shows no
+managed resources in the workspace. The HCP workspace and its variable sets,
+local generated configs, and AWS resources outside this workflow are retained.

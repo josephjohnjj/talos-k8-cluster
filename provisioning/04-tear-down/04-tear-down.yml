@@ -1,0 +1,118 @@
+---
+- name: Tear down the Talos AWS infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    terraform_dir: "{{ playbook_dir }}/../02-terraform"
+    aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) }}"
+    requested_allocation_id: "{{ lookup('ansible.builtin.env', 'CONTROLPLANE_API_EIP_ALLOCATION_ID') }}"
+    receipt_path: "{{ playbook_dir }}/.pending-elastic-ip.json"
+  tasks:
+    - name: Require explicit confirmation for teardown
+      ansible.builtin.assert:
+        that:
+          - confirm_teardown | default(false) | bool
+          - not ansible_check_mode
+        fail_msg: >-
+          Review terraform plan -destroy first, then run this playbook
+          with -e confirm_teardown=true.
+
+    - name: Read Terraform outputs before destroying infrastructure
+      ansible.builtin.command:
+        argv: [terraform, "-chdir={{ terraform_dir }}", output, -json]
+      register: terraform_outputs
+      changed_when: false
+      no_log: true
+
+    - name: Check for a pending Elastic IP release
+      ansible.builtin.stat:
+        path: "{{ receipt_path }}"
+      register: receipt_file
+
+    - name: Determine the expected allocation and public IP
+      ansible.builtin.set_fact:
+        pending_release: "{{ (lookup('ansible.builtin.file', receipt_path) | from_json) if receipt_file.stat.exists else {} }}"
+        terraform_api_ip: "{{ ((terraform_outputs.stdout | from_json).controlplane_api_public_ip | default({})).value | default('') }}"
+
+    - name: Select the recorded or explicitly supplied allocation ID
+      ansible.builtin.set_fact:
+        allocation_id: "{{ pending_release.allocation_id | default(requested_allocation_id) }}"
+
+    - name: Require a known AWS region and reservation
+      ansible.builtin.assert:
+        that:
+          - not pending_release or pending_release.region == aws_region
+          - not pending_release or not requested_allocation_id or allocation_id == requested_allocation_id
+          - (terraform_api_ip | length > 0) or (allocation_id | length > 0)
+          - not allocation_id or allocation_id is match('^eipalloc-[0-9a-f]+$')
+        fail_msg: >-
+          Use the original AWS region and allocation ID. If provisioning stopped
+          before Terraform wrote outputs, export CONTROLPLANE_API_EIP_ALLOCATION_ID
+          for the reservation you want to release.
+
+    - name: Resolve the Elastic IP in the selected AWS account and region
+      amazon.aws.ec2_eip_info:
+        region: "{{ aws_region }}"
+        filters: "{{ {'allocation-id': allocation_id} if allocation_id else {'public-ip': terraform_api_ip} }}"
+      register: addresses
+
+    - name: Verify AWS reports the reservation expected by Terraform
+      ansible.builtin.assert:
+        that:
+          - addresses.addresses | length <= 1
+          - not terraform_api_ip or addresses.addresses | length == 1
+          - not terraform_api_ip or addresses.addresses[0].public_ip == terraform_api_ip
+        fail_msg: >-
+          The reservation did not match Terraform's API endpoint.
+          Check the AWS account, region, and allocation ID before destroying resources.
+
+    - name: Record the exact allocation for retries before Terraform removes its outputs
+      ansible.builtin.copy:
+        dest: "{{ receipt_path }}"
+        content: "{{ {'allocation_id': addresses.addresses[0].allocation_id, 'region': aws_region} | to_nice_json }}"
+        mode: "0600"
+      when: addresses.addresses | length == 1
+
+    - name: Destroy the Terraform-managed AWS resources
+      ansible.builtin.command:
+        argv: [terraform, "-chdir={{ terraform_dir }}", destroy, -input=false, -auto-approve]
+
+    - name: Release the separately reserved control-plane Elastic IP
+      when: addresses.addresses | length == 1
+      vars:
+        reservation_id: "{{ addresses.addresses[0].allocation_id }}"
+      block:
+        - name: Verify Terraform detached the reservation
+          amazon.aws.ec2_eip_info:
+            region: "{{ aws_region }}"
+            filters:
+              allocation-id: "{{ reservation_id }}"
+          register: detached_address
+          until: >-
+            detached_address.addresses | length == 0 or
+            not (detached_address.addresses[0].association_id | default(''))
+          retries: 12
+          delay: 5
+
+        - name: Release the reservation by allocation ID
+          ansible.builtin.command:
+            argv: [aws, ec2, release-address, --region, "{{ aws_region }}", --allocation-id, "{{ reservation_id }}"]
+          when: detached_address.addresses | length == 1
+
+        - name: Confirm AWS no longer reports the allocation
+          amazon.aws.ec2_eip_info:
+            region: "{{ aws_region }}"
+            filters:
+              allocation-id: "{{ reservation_id }}"
+          register: released_address
+          until: released_address.addresses | length == 0
+          retries: 12
+          delay: 5
+
+    - name: Clear the pending release record
+      ansible.builtin.file:
+        path: "{{ receipt_path }}"
+        state: absent
